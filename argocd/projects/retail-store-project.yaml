@@ -7,7 +7,7 @@ spec:
   description: Retail Store Sample Application
   
   sourceRepos:
-    - 'https://github.com/LondheShubham153/retail-store-sample-app'
+    - 'https://github.com/Rajeshgupta123456789/EKS-Auto-Mode'
   
   destinations:
     - namespace: retail-store
