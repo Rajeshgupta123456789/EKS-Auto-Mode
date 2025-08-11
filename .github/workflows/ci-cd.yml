@@ -1,0 +1,170 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'src/**'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'src/**'
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      ui: ${{ steps.changes.outputs.ui }}
+      catalog: ${{ steps.changes.outputs.catalog }}
+      cart: ${{ steps.changes.outputs.cart }}
+      checkout: ${{ steps.changes.outputs.checkout }}
+      orders: ${{ steps.changes.outputs.orders }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - uses: dorny/paths-filter@v2
+        id: changes
+        with:
+          filters: |
+            ui:
+              - 'src/ui/**'
+            catalog:
+              - 'src/catalog/**'
+            cart:
+              - 'src/cart/**'
+            checkout:
+              - 'src/checkout/**'
+            orders:
+              - 'src/orders/**'
+
+  build-and-deploy:
+    needs: detect-changes
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [ui, catalog, cart, checkout, orders]
+    
+    steps:
+      - name: Skip if no changes
+        if: needs.detect-changes.outputs[matrix.service] != 'true'
+        run: echo "No changes detected for ${{ matrix.service }}, skipping..."
+      
+      - name: Checkout code
+        if: needs.detect-changes.outputs[matrix.service] == 'true'
+        uses: actions/checkout@v4
+      
+      - name: Configure AWS credentials
+        if: needs.detect-changes.outputs[matrix.service] == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Login to Amazon ECR
+        if: needs.detect-changes.outputs[matrix.service] == 'true'
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+      
+      - name: Set up Docker Buildx
+        if: needs.detect-changes.outputs[matrix.service] == 'true'
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Generate image tag
+        if: needs.detect-changes.outputs[matrix.service] == 'true'
+        id: image-tag
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "tag=pr-${{ github.event.number }}-${{ github.sha }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${{ github.sha }}" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Build and push Docker image
+        if: needs.detect-changes.outputs[matrix.service] == 'true'
+        uses: docker/build-push-action@v5
+        with:
+          context: ./src/${{ matrix.service }}
+          file: ./src/${{ matrix.service }}/Dockerfile
+          push: true
+          tags: |
+            ${{ env.ECR_REGISTRY }}/retail-store-${{ matrix.service }}:${{ steps.image-tag.outputs.tag }}
+            ${{ env.ECR_REGISTRY }}/retail-store-${{ matrix.service }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      
+      - name: Update Helm chart values
+        if: needs.detect-changes.outputs[matrix.service] == 'true' && github.event_name != 'pull_request'
+        run: |
+          # Update the image tag in values.yaml
+          sed -i "s|tag: \".*\"|tag: \"${{ steps.image-tag.outputs.tag }}\"|g" src/${{ matrix.service }}/chart/values.yaml
+          
+          # Update the repository to point to your ECR
+          sed -i "s|repository: .*|repository: ${{ env.ECR_REGISTRY }}/retail-store-${{ matrix.service }}|g" src/${{ matrix.service }}/chart/values.yaml
+      
+      - name: Commit and push Helm chart updates
+        if: needs.detect-changes.outputs[matrix.service] == 'true' && github.event_name != 'pull_request'
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add src/${{ matrix.service }}/chart/values.yaml
+          git diff --staged --quiet || git commit -m "Update ${{ matrix.service }} image tag to ${{ steps.image-tag.outputs.tag }}"
+          git push
+      
+      - name: Deploy to Kubernetes (Optional)
+        if: needs.detect-changes.outputs[matrix.service] == 'true' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: |
+          # Install Helm if not already installed
+          curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          
+          # Add your Kubernetes cluster configuration here
+          # Example: aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name your-cluster-name
+          
+          # Deploy using Helm
+          # helm upgrade --install retail-store-${{ matrix.service }} ./src/${{ matrix.service }}/chart \
+          #   --namespace retail-store \
+          #   --create-namespace \
+          #   --set image.tag=${{ steps.image-tag.outputs.tag }}
+
+  security-scan:
+    needs: detect-changes
+    runs-on: ubuntu-latest
+    if: needs.detect-changes.outputs.ui == 'true' || needs.detect-changes.outputs.catalog == 'true' || needs.detect-changes.outputs.cart == 'true' || needs.detect-changes.outputs.checkout == 'true' || needs.detect-changes.outputs.orders == 'true'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: './src'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+      
+      - name: Upload Trivy scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  notify:
+    needs: [detect-changes, build-and-deploy]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+      - name: Notify deployment status
+        run: |
+          if [[ "${{ needs.build-and-deploy.result }}" == "success" ]]; then
+            echo "✅ Deployment successful!"
+          else
+            echo "❌ Deployment failed!"
+          fi

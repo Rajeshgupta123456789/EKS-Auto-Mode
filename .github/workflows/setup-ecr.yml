@@ -1,0 +1,63 @@
+name: Setup ECR Repositories
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/setup-ecr.yml'
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  setup-ecr:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [ui, catalog, cart, checkout, orders]
+    
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Create ECR repository
+        run: |
+          REPO_NAME="retail-store-${{ matrix.service }}"
+          
+          # Check if repository exists
+          if aws ecr describe-repositories --repository-names $REPO_NAME --region ${{ env.AWS_REGION }} 2>/dev/null; then
+            echo "Repository $REPO_NAME already exists"
+          else
+            echo "Creating repository $REPO_NAME"
+            aws ecr create-repository \
+              --repository-name $REPO_NAME \
+              --region ${{ env.AWS_REGION }} \
+              --image-scanning-configuration scanOnPush=true \
+              --encryption-configuration encryptionType=AES256
+            
+            # Set lifecycle policy to keep only last 10 images
+            aws ecr put-lifecycle-policy \
+              --repository-name $REPO_NAME \
+              --region ${{ env.AWS_REGION }} \
+              --lifecycle-policy-text '{
+                "rules": [
+                  {
+                    "rulePriority": 1,
+                    "description": "Keep last 10 images",
+                    "selection": {
+                      "tagStatus": "any",
+                      "countType": "imageCountMoreThan",
+                      "countNumber": 10
+                    },
+                    "action": {
+                      "type": "expire"
+                    }
+                  }
+                ]
+              }'
+          fi

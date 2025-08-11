@@ -1,0 +1,113 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [ui, catalog, cart, checkout, orders]
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+      
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./src/${{ matrix.service }}
+          file: ./src/${{ matrix.service }}/Dockerfile
+          push: true
+          tags: |
+            ${{ env.ECR_REGISTRY }}/retail-store-${{ matrix.service }}:${{ steps.version.outputs.version }}
+            ${{ env.ECR_REGISTRY }}/retail-store-${{ matrix.service }}:stable
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      
+      - name: Update Helm chart for release
+        run: |
+          # Update the image tag in values.yaml for release
+          sed -i "s|tag: \".*\"|tag: \"${{ steps.version.outputs.version }}\"|g" src/${{ matrix.service }}/chart/values.yaml
+          
+          # Update the repository to point to your ECR
+          sed -i "s|repository: .*|repository: ${{ env.ECR_REGISTRY }}/retail-store-${{ matrix.service }}|g" src/${{ matrix.service }}/chart/values.yaml
+      
+      - name: Package Helm chart
+        run: |
+          helm package src/${{ matrix.service }}/chart --version ${{ steps.version.outputs.version }} --app-version ${{ steps.version.outputs.version }}
+      
+      - name: Upload Helm chart to release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: retail-store-${{ matrix.service }}-${{ steps.version.outputs.version }}.tgz
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  create-release-notes:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # Get the previous tag
+          PREVIOUS_TAG=$(git describe --tags --abbrev=0 HEAD~1 2>/dev/null || echo "")
+          CURRENT_TAG=${GITHUB_REF#refs/tags/}
+          
+          echo "## Changes in $CURRENT_TAG" > changelog.md
+          echo "" >> changelog.md
+          
+          if [[ -n "$PREVIOUS_TAG" ]]; then
+            echo "### Commits since $PREVIOUS_TAG:" >> changelog.md
+            git log --pretty=format:"- %s (%h)" $PREVIOUS_TAG..HEAD >> changelog.md
+          else
+            echo "### All commits:" >> changelog.md
+            git log --pretty=format:"- %s (%h)" >> changelog.md
+          fi
+          
+          echo "" >> changelog.md
+          echo "### Docker Images:" >> changelog.md
+          echo "- \`${{ env.ECR_REGISTRY }}/retail-store-ui:$CURRENT_TAG\`" >> changelog.md
+          echo "- \`${{ env.ECR_REGISTRY }}/retail-store-catalog:$CURRENT_TAG\`" >> changelog.md
+          echo "- \`${{ env.ECR_REGISTRY }}/retail-store-cart:$CURRENT_TAG\`" >> changelog.md
+          echo "- \`${{ env.ECR_REGISTRY }}/retail-store-checkout:$CURRENT_TAG\`" >> changelog.md
+          echo "- \`${{ env.ECR_REGISTRY }}/retail-store-orders:$CURRENT_TAG\`" >> changelog.md
+      
+      - name: Update release with changelog
+        uses: softprops/action-gh-release@v1
+        with:
+          body_path: changelog.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

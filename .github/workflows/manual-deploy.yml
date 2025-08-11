@@ -1,0 +1,96 @@
+name: Manual Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: 'Service to deploy'
+        required: true
+        type: choice
+        options:
+          - ui
+          - catalog
+          - cart
+          - checkout
+          - orders
+          - all
+      environment:
+        description: 'Target environment'
+        required: true
+        type: choice
+        options:
+          - development
+          - staging
+          - production
+      image_tag:
+        description: 'Image tag to deploy (leave empty for latest)'
+        required: false
+        type: string
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: ${{ github.event.inputs.service == 'all' && fromJson('["ui", "catalog", "cart", "checkout", "orders"]') || fromJson(format('["{0}"]', github.event.inputs.service)) }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Setup Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: '3.12.0'
+      
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: '1.28.0'
+      
+      - name: Configure kubectl
+        run: |
+          # Update kubeconfig for your EKS cluster
+          # Replace 'your-cluster-name' with your actual cluster name
+          # aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name your-cluster-name
+          echo "Configure your EKS cluster connection here"
+      
+      - name: Determine image tag
+        id: image-tag
+        run: |
+          if [[ -n "${{ github.event.inputs.image_tag }}" ]]; then
+            echo "tag=${{ github.event.inputs.image_tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=latest" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Deploy with Helm
+        run: |
+          NAMESPACE="retail-store-${{ github.event.inputs.environment }}"
+          RELEASE_NAME="retail-store-${{ matrix.service }}-${{ github.event.inputs.environment }}"
+          
+          helm upgrade --install $RELEASE_NAME ./src/${{ matrix.service }}/chart \
+            --namespace $NAMESPACE \
+            --create-namespace \
+            --set image.repository=${{ env.ECR_REGISTRY }}/retail-store-${{ matrix.service }} \
+            --set image.tag=${{ steps.image-tag.outputs.tag }} \
+            --set environment=${{ github.event.inputs.environment }} \
+            --wait \
+            --timeout=10m
+      
+      - name: Verify deployment
+        run: |
+          NAMESPACE="retail-store-${{ github.event.inputs.environment }}"
+          kubectl get pods -n $NAMESPACE -l app.kubernetes.io/name=retail-store-${{ matrix.service }}
+          kubectl rollout status deployment/retail-store-${{ matrix.service }} -n $NAMESPACE --timeout=300s
