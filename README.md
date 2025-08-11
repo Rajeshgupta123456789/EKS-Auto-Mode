@@ -32,7 +32,7 @@ This is a sample application designed to illustrate various concepts related to 
 - [Infrastructure Components](#infrastructure-components)
 - [CI/CD Pipeline](#cicd-pipeline)
 - [Monitoring and Observability](#monitoring-and-observability)
-- [Cleanup](https://github.com/LondheShubham153/retail-store-sample-app/blob/main/README.md#step-12-cleanup)
+- [Cleanup](https://github.com/Rajeshgupta123456789/EKS-Auto-Mode)
 - [Troubleshooting](#troubleshooting)
 
 ## Overview
@@ -187,7 +187,7 @@ aws configure
 ### Step 2. Clone the Repository:
 
 ```sh
-git clone https://github.com/LondheShubham153/retail-store-sample-app.git
+git clone https://github.com/Rajeshgupta123456789/EKS-Auto-Mode
 ```
 
 > [!IMPORTANT]
@@ -409,12 +409,6 @@ Error: Failed to pull image "123456789012.dkr.ecr.us-west-2.amazonaws.com/retail
 
 This project is licensed under the Apache License 2.0 - see the [LICENSE](./LICENSE) file for details.
 
-## Support
-
-- **Issues**: [GitHub Issues](https://github.com/LondheShubham153/retail-store-sample-app/issues)
-- **Discord**: [TrainWithShubhamCommunity](https://discord.gg/kGEr9mR5gT)
-
----
 
 <div align="center">
 
